@@ -1,0 +1,615 @@
+'use strict';
+
+class GoogleSheet{
+	constructor(options){
+		this.spreadsheetId = options.spreadsheetId;
+		this.initialized = false;
+		this.sheetsAPI = google.sheets('v4');
+	}
+	
+	init(){
+		if(this.initialized) return Promise.resolve();
+		if(!this.spreadsheetId){
+			
+		}
+		this.initialized = true;
+	}
+	
+	
+	getRangeForDimensions(x, y, xoffset, yoffset){
+		if(!xoffset) xoffset = 0;
+		if(!yoffset) yoffset = 0;
+		x--;
+		y--;
+		var initialCell = String.fromCharCode(xoffset + 65) + (yoffset + 1);
+		var finalCell = String.fromCharCode(xoffset + x + 65) + (yoffset + y + 1);
+		return initialCell + ':' + finalCell;
+	}
+	
+	getRangeOfCells(x, y, xoffset, yoffset){
+		var self = this;
+		return self.getAuth().then(function(auth){
+			return new Promise(function(fulfill, reject){
+				self.sheetsAPI.spreadsheets.values.get({
+					auth: auth,
+					spreadsheetId: self.spreadsheetId,
+					range: self.getRangeForDimensions(x, y, xoffset, yoffset),
+				}, function(err, response){
+					if(err) reject(err);
+					else fulfill(response);
+				});
+			});	
+		});
+	}
+	
+	getEntireSheetValues(){
+		var self = this;
+		return self.getAuth().then(function(auth){
+			return new Promise(function(fulfill, reject){
+				self.sheetsAPI.spreadsheets.values.get({
+					auth: auth,
+					spreadsheetId: self.spreadsheetId,
+					range: 'A1:ZZ999999',
+				}, function(err, response){
+					if(err) reject(err);
+					else fulfill(response);
+				});
+			});	
+		});
+	}
+	
+	clearSheet(){
+		var self = this;
+		return self.getAuth().then(function(auth){
+			return new Promise(function(fulfill, reject){
+				self.sheetsAPI.spreadsheets.values.clear({
+					auth: auth,
+					spreadsheetId: self.spreadsheetId,
+					range: 'A1:ZZ999999'
+			  }, function(err, response){
+					if(err) reject(err);
+					else fulfill(response);
+				});
+			});
+		});
+	}
+	
+	writeValuesToSheet(values){
+		var self = this;
+		var numRows = values.length;
+		var numColumns = values[0].length;
+		return self.clearSheet().then(function(){
+		  return self.getAuth().then(function(auth){
+			  return new Promise(function(fulfill, reject){
+					self.sheetsAPI.spreadsheets.values.update({
+						auth: auth,
+						spreadsheetId: self.spreadsheetId,
+						valueInputOption: 'RAW',
+						range: self.getRangeForDimensions(numColumns, numRows),
+						resource: {
+							values: values
+						}
+					}, function(err, response){
+						if(err) reject(err);
+						else fulfill(response);
+					});
+			  });
+			});	
+		  });	
+	}
+	
+	getAuth(){
+		// Load client secrets from a local file.
+		return new Promise(function(fulfill, reject){
+			fs.readFile('client_secret.json', function processClientSecrets(err, content) {
+			  if (err) {
+				console.log('Error loading client secret file: ' + err);
+				reject(err);
+			  }
+			  // Authorize a client with the loaded credentials, then call the
+			  // Google Sheets API.
+			  else fulfill(content);
+			});
+		}).then(function(content){
+			return authorize(JSON.parse(content));
+
+		});
+	}
+}
+
+var webdriver = require('selenium-webdriver');
+var By = webdriver.By;
+var until = webdriver.until;
+var moment = require('moment');
+
+var fs = require('fs');
+var path = require('path');
+var csv = require('csv');
+
+var readline = require('readline');
+var google = require('googleapis');
+var googleAuth = require('google-auth-library');
+
+// If modifying these scopes, delete your previously saved credentials
+// at ~/.credentials/sheets.googleapis.com-nodejs-quickstart.json
+var SCOPES = [
+		'https://www.googleapis.com/auth/spreadsheets'
+		//'https://www.googleapis.com/auth/spreadsheets.readonly'
+		];
+var TOKEN_DIR = (process.env.HOME || process.env.HOMEPATH ||
+    process.env.USERPROFILE) + '/.credentials/';
+var TOKEN_PATH = TOKEN_DIR + 'sheets.googleapis.com-nodejs-quickstart.json';
+
+var file_content = null;
+
+var master_houses_list_sheet = new GoogleSheet({
+	spreadsheetId: "1N69T8xQ06AoLSXX2ijv8ClKegVv8r8bhb5kkDBntzlo"
+});
+var driver = new webdriver.Builder()
+  .withCapabilities(webdriver.Capabilities.chrome())
+  .build();
+  
+  var recentSheetArr = null;
+  var masterHouseArr = null;
+driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&num_homes=22000&ord=price-asc&page_number=1&poly=-93.10751575078125%2034.23010298691406%2C-91.31018664921875%2034.23010298691406%2C-91.31018664921875%2035.13309981308594%2C-93.10751575078125%2035.13309981308594%2C-93.10751575078125%2034.23010298691406&sf=1,2,3,5,6,7&sp=true&status=7&uipt=1,2,3,4,5,6&v=8').then(function(){
+  return pause(20000);
+}).then(function(){
+  var files = fs.readdirSync('C:\\\\Users\\Bryce\\Downloads');
+  files = files.filter(function(file){
+	  return file.includes('redfin_' + moment().format('YYYY-MM-DD'));
+  });
+  if(files.length === 0) throw new Error('There were no files found from redfin.');
+  file_content = fs.readFileSync('C:\\\\Users\\Bryce\\Downloads\\' + files[0], 'utf-8');
+  recentSheetArr = parseCSV(file_content);
+}).then(function(){
+	return master_houses_list_sheet.getEntireSheetValues();
+}).then(function(result){
+	if(result.values) return convertGoogleValuesToObjectValues(result.values);
+	else return [];
+}).then(function(objValues){
+	masterHouseArr = objValues;
+	//go through each house from csv downloaded today; if it's in the master list
+	//then update the status of the house in the master list. if it's not in the
+	//master list then add it to the master list
+	console.log('looping through houses on csv downloaded today, updating master house list...');
+	recentSheetArr.forEach(function(recentHouse){
+		var skip = doFilterOrNot(recentHouse);
+		if(skip) {
+			console.log('filtering ' + JSON.stringify(recentHouse));
+			return;
+		}
+		var recentHouseKey = recentHouse.ADDRESS + recentHouse.CITY + recentHouse.STATE + recentHouse.ZIP;
+		var found = false;
+		console.log(recentHouseKey);
+		masterHouseArr.forEach(function(knownHouse){
+			if(found) return;
+			var knownHouseKey = knownHouse.ADDRESS + knownHouse.CITY + knownHouse.STATE + knownHouse.ZIP;
+			if(recentHouseKey === knownHouseKey){
+				found = true;
+				knownHouse.STATUS = recentHouse.STATUS;
+			}
+		});
+		if(!found){
+			masterHouseArr.push(recentHouse);
+		}
+	});
+	//go through each house in master list, if it's not on the csv downloaded today,
+	//or if its status is "Contingent", search it in redfin to see what its status is
+	console.log('looping through houses in master house list, checking if its current status is known based on the latest csv download');
+	return loopInOrder(masterHouseArr, function(elem){
+		delete elem['SOLD DATE'];
+		var knownHouseKey = elem.ADDRESS + elem.CITY + elem.STATE + elem.ZIP;
+		console.log(knownHouseKey);
+		var found = false;
+	  recentSheetArr.forEach(function(recentHouse){
+		if(found) {
+			return;
+		}
+		var recentHouseKey = recentHouse.ADDRESS + recentHouse.CITY + recentHouse.STATE + recentHouse.ZIP;
+		if(knownHouseKey === recentHouseKey) {
+			console.log('this one was found on the list.');
+			found = true;
+		}
+	  });
+	  var promise = null;
+	  if(found){
+		if(elem.STATUS === 'Contingent'){
+			promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
+				return searchForStatusOnHousePage(driver);
+			});
+		}
+		else promise = Promise.resolve();
+	  }
+	  /*else promise = searchForStatusOfHouseInRedfin(driver, elem).then(function(text){
+		  elem.STATUS = text;
+	  });*/
+	  else promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
+		return searchForStatusOnHousePage(driver);
+	  });
+	  return promise.then(function(status){
+		  if(status) elem.STATUS = status;
+	  }).catch(function(err){
+		  elem.STATUS = 'Not Found';
+		  console.log(err.stack + '\n');
+		  console.log('Could not get status of address: ' + elem.ADDRESS + '\n\n\n');
+	  });
+  });
+}).then(function(){
+	var googleReadyNewMasterList = convertObjectValuesToGoogleValues(masterHouseArr);
+	return master_houses_list_sheet.writeValuesToSheet(googleReadyNewMasterList);
+});
+
+function parseCSV(fileContent){
+	var finalArr = [];
+	var lines = fileContent.split('\n');
+	var firstLine = lines[0];
+	var columnNames = readCSVLine(firstLine);
+	console.log('columns: ' + JSON.stringify(columnNames));
+	lines = lines.slice(1);
+	lines.forEach(function(line){
+		console.log(line);
+		if(line && !line.includes('Over 500 results.')){
+			var values = readCSVLine(line);
+			if(values.length !== columnNames.length) throw new Error('For some reason, this line has more or less values than there are columns.');
+			var obj = {};
+			values.forEach(function(value, index){
+				obj[columnNames[index]] = value;
+			});
+			finalArr.push(obj);
+		}
+	});
+	return finalArr;
+}
+
+function readCSVLine(line){
+	var numChars = line.length;
+	var values = [];
+	var currentValue = '';
+	var startNewValue = true;
+	var quoteMode = false;
+	for(var i = 0; i < numChars; i++){
+		var character = line.charAt(i);
+		if((!quoteMode && character === ',') || i === numChars - 1){
+			values.push(currentValue);
+			currentValue = '';
+			startNewValue = true;
+			quoteMode = false;
+		}
+		else if(character === '"'){
+			if(startNewValue){
+				quoteMode = true;
+				startNewValue = false;
+			}
+			else{
+				var nextChar = line.charAt(i + 1);
+				if(nextChar === '"'){
+					i++;
+					currentValue += nextChar;
+				}
+				else if(!nextChar || nextChar === ',')
+				{
+					values.push(currentValue);
+					i++;
+					currentValue = '';
+					startNewValue = true;
+					quoteMode = false;
+				}
+				else throw new Error('Unexpected next character after ": ' + nextChar);
+			}
+		}
+		else{
+			currentValue += character;
+			startNewValue = false;
+		}
+	}
+	return values;
+}
+  
+  
+  	/**
+ * Create an OAuth2 client with the given credentials, and then execute the
+ * given callback function.
+ *
+ * @param {Object} credentials The authorization client credentials.
+ * @param {function} callback The callback to call with the authorized client.
+ */
+ //Promisified
+function authorize(credentials) {
+  var clientSecret = credentials.installed.client_secret;
+  var clientId = credentials.installed.client_id;
+  var redirectUrl = credentials.installed.redirect_uris[0];
+  var auth = new googleAuth();
+  var oauth2Client = new auth.OAuth2(clientId, clientSecret, redirectUrl);
+
+  return new Promise(function(fulfill, reject){
+	   // Check if we have previously stored a token.
+	  fs.readFile(TOKEN_PATH, function(err, token) {
+		if (err) {
+			reject(err);
+		  //getNewToken(oauth2Client, callback);
+		} else {
+		  oauth2Client.credentials = JSON.parse(token);
+		  fulfill(oauth2Client);
+		}
+	  });
+  }).catch(function(err){
+	  return new Promise(function(fulfill, reject){
+		    var authUrl = oauth2Client.generateAuthUrl({
+			access_type: 'offline',
+			scope: SCOPES
+		  });
+		  console.log('Authorize this app by visiting this url: ', authUrl);
+		  var rl = readline.createInterface({
+			input: process.stdin,
+			output: process.stdout
+		  });
+		  rl.question('Enter the code from that page here: ', function(code) {
+			  fulfill(code);
+		  });
+	  }).then(function(code){
+		  rl.close();
+			oauth2Client.getToken(code, function(err, token) {
+			  if (err) {
+				console.log('Error while trying to retrieve access token', err);
+				return;
+			  }
+			  oauth2Client.credentials = token;
+			  storeToken(token);
+			  return oauth2Client;
+			  //callback(oauth2Client);
+			});
+	  });
+  }); 
+}
+
+/**
+ * Get and store new token after prompting for user authorization, and then
+ * execute the given callback with the authorized OAuth2 client.
+ *
+ * @param {google.auth.OAuth2} oauth2Client The OAuth2 client to get token for.
+ * @param {getEventsCallback} callback The callback to call with the authorized
+ *     client.
+ */
+function getNewToken(oauth2Client) {
+  var authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: SCOPES
+  });
+  console.log('Authorize this app by visiting this url: ', authUrl);
+  var rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  rl.question('Enter the code from that page here: ', function(code) {
+    rl.close();
+    oauth2Client.getToken(code, function(err, token) {
+      if (err) {
+        console.log('Error while trying to retrieve access token', err);
+        return;
+      }
+      oauth2Client.credentials = token;
+      storeToken(token);
+      //callback(oauth2Client);
+    });
+  });
+}
+
+/**
+ * Store token to disk be used in later program executions.
+ *
+ * @param {Object} token The token to store to disk.
+ */
+function storeToken(token) {
+  try {
+    fs.mkdirSync(TOKEN_DIR);
+  } catch (err) {
+    if (err.code != 'EEXIST') {
+      throw err;
+    }
+  }
+  fs.writeFile(TOKEN_PATH, JSON.stringify(token));
+  console.log('Token stored to ' + TOKEN_PATH);
+}
+
+/**
+ * Print the names and majors of students in a sample spreadsheet:
+ * https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit
+ */
+function listMajors(auth) {
+  var sheets = google.sheets('v4');
+  var values = [[1, 3], [4, 3]];
+   /*sheets.spreadsheets.values.get({
+    auth: auth,
+    spreadsheetId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+    range: 'Class Data!A2:E',
+  }sheets.spreadsheets.values.update({
+    auth: auth,
+    spreadsheetId: '15mfAEr5E6OsW58bheFVloUW2vqq686EbL92DpKT7i_I',
+	valueInputOption: 'RAW',
+    range: 'A1:C3',
+	resource: {
+		values: values
+	}*/
+	sheets.spreadsheets.values.batchUpdate({
+		auth: auth,
+		spreadsheetId: '15mfAEr5E6OsW58bheFVloUW2vqq686EbL92DpKT7i_I',
+		requests: [
+		{
+		  "updateCells": {
+			"range": {
+			  "sheetId": '15mfAEr5E6OsW58bheFVloUW2vqq686EbL92DpKT7i_I'
+			},
+			 "fields": "userEnteredValue"
+		  }
+		}
+	  ]
+  }, function(err, response) {
+    if (err) {
+      console.log('The API returned an error: ' + err);
+      return;
+    }
+    console.log(JSON.stringify(response));
+  });
+}
+  
+function convertGoogleValuesToObjectValues(googleValues){
+	var headerArr = googleValues[0];
+	var valuesArrs = googleValues.slice(1);
+	var resultArr = [];
+	valuesArrs.forEach(function(values){
+		var obj = {};
+		values.forEach(function(value, index){
+			obj[headerArr[index]] = value;
+		});
+		resultArr.push(obj);
+	});
+	return resultArr;
+}
+
+function convertObjectValuesToGoogleValues(objectValues){
+	var googleHeader = [];
+	var finalGoogleValues = [];
+	finalGoogleValues.push(googleHeader);
+	objectValues.forEach(function(obj){
+		var row = [];
+		var keys = Object.getOwnPropertyNames(obj);
+		keys.forEach(function(key){
+			if(googleHeader.indexOf(key) === -1) googleHeader.push(key);
+			row[googleHeader.indexOf(key)] = obj[key];
+		});
+		finalGoogleValues.push(row);
+	});
+	return finalGoogleValues;
+}
+
+function searchForHouseInRedfin(driver, elem){
+	var fullAddressMinusZip = null;
+	return driver.get('https://www.redfin.com/').then(function(){
+		  if(elem.CITY.toLowerCase() === 'little flock') elem.CITY = 'Little Rock';
+		  var fullAddress = elem.ADDRESS + ', ' + elem.CITY + ', ' + elem.STATE + ' ' + elem.ZIP;
+		  fullAddressMinusZip = elem.ADDRESS + ', ' + elem.CITY + ', ' + elem.STATE;
+		  console.log(fullAddress);
+		  return sendKeys(driver, By.id('search-box-input'), fullAddress);
+	  }).then(function(){
+		  return click(driver, By.xpath('//button[@title="Search"]'));
+	  }).then(function(){
+		  //return verifyElement(driver, By.xpath('//span[text()="Status: "]/../span[2]/div/span[contains(@class, "clickable")]'));
+		  return verifyElement(driver, By.xpath('//span[text()="Status: "]/../span[2]'));
+	  }).catch(function(err){
+		  console.log(err.stack + '\n********************************************\n');
+		 /* console.log(err.stack);
+		  process.exit(0);
+		  return driver.get('https://www.redfin.com/').then(function(){
+			  var fullAddress = elem.ADDRESS + ', ' + elem.CITY + ', ' + elem.STATE + 
+			' ' + elem.ZIP;
+				return sendKeys(driver, By.id('search-box-input'), fullAddress);
+
+		  }).then(function(){
+			return click(driver, By.xpath('//button[@title="Search"]'));
+		  }).then(function(){
+			 return verifyElement(driver, By.xpath('//span[text()="Status: "]/../span[2]/div/span[contains(@class, "clickable")]'));
+		  });*/
+		  return verifyElement(driver, By.xpath('//div[contains(@title, "' + fullAddressMinusZip + '")]/..')).then(function(element){
+			  return element.getAttribute('href');
+		  }).then(function(href){
+			  return driver.get(href);
+		  });
+	  });
+}
+
+function searchForStatusOnHousePage(driver){
+	return verifyElement(driver, By.xpath('//span[text()="Status: "]/../span[2]')).then(function(element){
+		return element.getText();
+	}).catch(function(err){
+		return verifyElement(driver, By.xpath('//div[text()="PENDING"]')).then(function(){
+			return "Pending";
+		});
+	});
+}
+
+function searchForStatusOfHouseInRedfin(driver, elem){
+	return searchForHouseInRedfin(driver, elem).then(function(){
+		return searchForStatusOnHousePage(driver);
+	});
+}
+
+function doFilterOrNot(house){
+	if(house.PRICE > 250000) return true;
+	var propertyType = house['PROPERTY TYPE'];
+	if(!(propertyType === 'Single Family Residential' || propertyType.includes('Multi-Family') 
+		|| propertyType === 'Townhouse')) return true;
+	if(!house.BEDS || house.BEDS < 2) return true;
+	//think about using zip code instead if this doesn't work well
+	var pk_towns = ['cammack village', 'jacksonville', 'little rock', 'maumelle',
+		'north little rock', 'sherwood', 'wrightsville', 'alexander', 'college station',
+		'gibson', 'hensley', 'landmark', 'mcalmont', 'crystal hill', 'gravel ridge', 
+		'ironton', 'mabelvale' ,'marche', 'woodyardville'];
+	return !pk_towns.some(function(town){
+		return town === house.CITY.toLowerCase();
+	});
+}
+  
+function click(driver, locator){
+	return verifyElement(driver, locator).then(function(element){
+		return element.click();
+	});
+}
+
+function sendKeys(driver, locator, keys){
+	var elem = null;
+	return verifyElement(driver, locator).then(function(element){
+		elem = element;
+		return elem.clear();
+	}).then(function(){
+		return elem.sendKeys(keys);
+	});
+}
+
+function executeScript(driver, script, locator){
+	if(locator){
+		return driver.executeScript(script);
+	}
+	else{
+		return driver.executeScript(script);
+	}
+}
+
+function scrollBy(driver, x, y){
+	return executeScript(driver, 'window.scrollBy(' + x + ',' + y + ')');
+}
+
+function verifyElement(driver, locator){
+	return driver.wait(until.elementLocated(locator), 10000).then(function(){
+		return driver.findElement(locator);
+	});
+}
+
+function verifyElements(driver, locator){
+	return driver.wait(until.elementLocated(locator), 10000).then(function(){
+		return driver.findElements(locator);
+	});
+}
+
+function loopInOrder(arr, fn, index){
+	if(!index) index = 0;
+	if(arr.length === 0) return Promise.resolve();
+	return fn(arr[index], index).then(function(){
+		if(index + 1 < arr.length) return loopInOrder(arr, fn, index + 1);
+		else return Promise.resolve();
+	});
+}
+
+function loopUntil(fn){
+	return fn().then(function(result){
+		if(result) return loopUntil(fn);
+		else return Promise.resolve();
+	});
+}
+
+function pause(millis){
+	return new Promise(function(fulfill){
+		setTimeout(function(){
+			fulfill();
+		}, millis);
+	});
+}

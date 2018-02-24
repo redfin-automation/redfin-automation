@@ -1,0 +1,22 @@
+{
+  "name": "tax-records",
+  "version": "1.0.0",
+  "description": "",
+  "main": "tax-records.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bluebird": "^3.5.1",
+    "chromedriver": "^2.32.3",
+    "csv": "^1.1.1",
+    "google-auth-library": "^0.10.0",
+    "googleapis": "^20.2.0",
+    "lodash": "^4.17.4",
+    "moment": "^2.18.1",
+    "phantom": "^4.0.12",
+    "selenium-webdriver": "^3.5.0"
+  }
+}
