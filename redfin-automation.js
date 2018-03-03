@@ -52,15 +52,50 @@ const TAB_NAMES = {MASTER: 'Master_List', EXPIRED_LISTINGS: 'Expired_Listings'};
 var master_sheet = null;
 var recentSheetArr = null;
 var masterHouseArr = null;
+var expiredListingsArr = null;
 var removeFromMasterListArr = [];
 var driver = BrowserOps.getChromeDriver();
 var driver2 = BrowserOps.getChromeDriver();
 
-driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&num_homes=22000&ord=price-asc&page_number=1&poly=-93.10751575078125%2034.23010298691406%2C-91.31018664921875%2034.23010298691406%2C-91.31018664921875%2035.13309981308594%2C-93.10751575078125%2035.13309981308594%2C-93.10751575078125%2034.23010298691406&sf=1,2,3,5,6,7&sp=true&status=7&uipt=1,2,3,4,5,6&v=8').then(function(){
-  return pause(20000);
+downloadHouseCSV().then(function(){
+	return extractHouseArrayFromCSV();
 }).then(function(){
-    const download_folder = _.filter(DOWNLOAD_FOLDERS, function(folder) {
-        return fs.existsSync(folder);
+    master_sheet = new GoogleSheet(SHEET_ID, TAB_NAMES.MASTER);
+	return getObjectValuesFromGoogleSheet(master_sheet);
+}).then(function(){
+	return processCSVFromToday();
+}).then(function(){
+	return processMasterList();
+}).then(function(){
+	masterHouseArr = masterHouseArr.filter(function(house){
+		return !doFilterOrNot(house);
+	});
+}).then(function(){
+	var googleReadyNewMasterList = convertObjectValuesToGoogleValues(masterHouseArr);
+	return master_sheet.update_sheet(googleReadyNewMasterList);
+}).then(function(){
+	expiredListingsArr = masterHouseArr.filter(function(masterHouseEntry){
+		return masterHouseEntry.STATUS === 'Not For Sale';
+	});
+	return loopInOrder(expiredListingsArr, function(exp_listing){
+		return assignOwnerNameToHouseIfFound(exp_listing);
+	});
+}).then(function(){
+	var googleReadyExpiredListingsList = convertObjectValuesToGoogleValues(expiredListingsArr);
+	if(googleReadyExpiredListingsList.length === 1) return Promise.resolve();
+	var expired_listings_sheet = new GoogleSheet(SHEET_ID, TAB_NAMES.EXPIRED_LISTINGS);
+	return expired_listings_sheet.update_sheet(googleReadyExpiredListingsList);
+});
+  
+function downloadHouseCSV(){
+	return driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&num_homes=22000&ord=price-asc&page_number=1&poly=-93.10751575078125%2034.23010298691406%2C-91.31018664921875%2034.23010298691406%2C-91.31018664921875%2035.13309981308594%2C-93.10751575078125%2035.13309981308594%2C-93.10751575078125%2034.23010298691406&sf=1,2,3,5,6,7&sp=true&status=7&uipt=1,2,3,4,5,6&v=8').then(function(){
+	  return pause(20000);
+	});
+}
+
+function extractHouseArrayFromCSV(){
+	const download_folder = _.filter(DOWNLOAD_FOLDERS, function(folder) {
+		return fs.existsSync(folder);
     })[0];
     var files = fs.readdirSync(download_folder).filter(function(file) {
         return file.includes('redfin_' + moment().format('YYYY-MM-DD'));
@@ -68,13 +103,16 @@ driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&n
     if (files.length === 0) throw new Error('There were no files found from redfin.');
     const file_content = fs.readFileSync(path.join(download_folder, files[0]), 'utf-8');
     recentSheetArr = Utils.parseCSV(file_content);
-}).then(function(){
-    master_sheet = new GoogleSheet(SHEET_ID, TAB_NAMES.MASTER);
-	return master_sheet.get_sheet();
-}).then(function(objValues){
-	if(objValues.values) masterHouseArr = convertGoogleValuesToObjectValues(objValues.values);
-	else masterHouseArr = [];
+}
 
+function getObjectValuesFromGoogleSheet(google_sheet){
+	return google_sheet.get_sheet().then(function(google_values){
+		if(google_values.values) masterHouseArr = convertGoogleValuesToObjectValues(google_values.values);
+		else masterHouseArr = [];
+	});
+}
+
+function processCSVFromToday(){
 	//go through each house from csv downloaded today, if it's in the master list
 	//then update the status of the house in the master list. if it's not in the
 	//master list then add it to the master list
@@ -99,63 +137,12 @@ driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&n
 			masterHouseArr.push(recentHouse);
 		}
 	});
-	//go through each house in master list, if it's not on the csv downloaded today,
-	//search it in redfin to see what its status is
-	console.log('looping through houses in master house list, checking if its current status is known based on the latest csv download');
-	return loopInOrder(masterHouseArr, function(elem){
-		delete elem['SOLD DATE'];
-		delete elem['NEXT OPEN HOUSE START TIME'];
-		delete elem['NEXT OPEN HOUSE END TIME'];
-		delete elem['FAVORITE'];
-		delete elem['INTERESTED'];
-		
-		if(!elem['LAST SOLD DATE']) elem['LAST SOLD DATE'] = "";
-		if(!elem['FIRST NAME']) elem['FIRST NAME'] = "";
-		if(!elem['LAST NAME']) elem['LAST NAME'] = "";
-		if(!elem['CORPORATION NAME']) elem['CORPORATION NAME'] = "";
+}
 
-		var knownHouseKey = elem.ADDRESS + elem.CITY + elem.STATE + elem.ZIP;
-		console.log(knownHouseKey);
-		var found = false;
-	  recentSheetArr.forEach(function(recentHouse){
-		if(found) {
-			return;
-		}
-		var recentHouseKey = recentHouse.ADDRESS + recentHouse.CITY + recentHouse.STATE + recentHouse.ZIP;
-		if(knownHouseKey === recentHouseKey) {
-			console.log('this one was found on the list.');
-			found = true;
-		}
-	  });
-	  var promise = null;
-	  if(found){
-		if(elem.STATUS === 'Contingent'){
-			promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
-				return searchForStatusOnHousePage(driver);
-			});
-		}
-		else promise = Promise.resolve();
-	  }
-	  else promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
-		return searchForStatusOnHousePage(driver);
-	  });
-	  return promise.then(function(status){
-		  if(status){
-			 elem.STATUS = status;	
-			 if(status.toLowerCase() === 'sold'){
-				 if(!elem['LAST SOLD DATE']){
-					 elem['LAST SOLD DATE'] = "" + new Date();
-				 }
-			} 
-		  } 	 
-	  }).catch(function(err){
-		  elem.STATUS = 'Not Found';
-		  console.log(err.stack + '\n');
-		  console.log('Could not get status of address: ' + elem.ADDRESS + '\n\n\n');
-	  }).then(function(){
-		  //go to arcountydata.com to find the first and last name of house owners if not already done
+function assignOwnerNameToHouseIfFound(elem){
+	//go to arcountydata.com to find the first and last name of house owners if not already done
 		  if(elem['FIRST NAME'] && elem['LAST NAME']){
-			  return;
+			  return Promise.resolve();
 		  }
 		  var address = elem['ADDRESS'];
 		  console.log('Finding first and last name of address: ' + address);
@@ -163,7 +150,7 @@ driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&n
 		  var street_num = parseInt(address_parts[0]);
 		  if(isNaN(street_num)){
 			  console.log('Not a valid address.');
-			  return;
+			  return Promise.resolve();
 		  }
 		  var street_direction = null;
 		  var possible_street_directions = ['N', 'E', 'S', 'W', 'NE', 'NW', 'SE', 'SW'];
@@ -198,17 +185,7 @@ driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&n
 		  var city = elem['CITY'];
 		  return searchForHouseOwnerOnARCountyData(driver2, city, address_street_name, street_num, street_direction).then(function(text){
 			  if(!text) throw new Error();
-			  if(!isName(text)){
-				  console.log('The owner does not seem to be an individual: ' + text);
-				  elem['CORPORATION NAME'] = text;
-				  return;
-			  }
-			  var split = text.split(" ");
-			  var lastName = split[0];
-			  var firstName = split.slice(1).join(' ');
-			  console.log('Found name! First: ' + firstName + ", Last: " + lastName);
-			  elem['FIRST NAME'] = firstName;
-			  elem['LAST NAME'] = lastName;
+			  return parseOwnerAsNameAndAssignToHouse(text, elem);
 		  }).catch(function(e){
 			  console.log('Name not found initially.');
 			  var promise = Promise.resolve();
@@ -218,51 +195,114 @@ driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&n
 			  else if(city.toUpperCase() === 'LITTLE ROCK'){
 				  promise = searchForHouseOwnerOnARCountyData(driver2, 'NORTH LITTLE ROCK', address_street_name, street_num, street_direction);
 			  }
-			  else return;
+			  else return Promise.resolve();
 			  return promise.then(function(text){
 				if(!text) throw new Error();
-				  if(!isName(text)){
-					  console.log('The owner does not seem to be an individual: ' + text);
-					  elem['CORPORATION NAME'] = text;
-					  return;
-				  }
-				  var split = text.split(" ");
-				  var lastName = split[0];
-				  var firstName = split.slice(1).join(' ');
-				  console.log('Found name! First: ' + firstName + ", Last: " + lastName);
-				  elem['FIRST NAME'] = firstName;
-				  elem['LAST NAME'] = lastName;
-			});
+				return parseOwnerAsNameAndAssignToHouse(text, elem);
+			  });
 		  }).catch(function(e){
 			  console.log('Could not find name.');
-			  console.log(e.stack);
 		  });
+}
+
+function parseOwnerAsNameAndAssignToHouse(text, elem){
+	//console.log('owner name: ' + text);
+	var split_name = text.split('/');
+	if(!isName(text)){
+	  //console.log('The owner does not seem to be an individual: ' + text);
+	  elem['CORPORATION NAME'] = text;
+	  return;
+   }
+   var split = text.split(" ");
+   var lastName = split[0];
+   var firstName = split.slice(1).join(' ');
+   console.log('Found name! First: ' + firstName + ", Last: " + lastName);
+   elem['FIRST NAME'] = firstName;
+   elem['LAST NAME'] = lastName;
+}
+				  
+
+function processMasterList(){
+	//go through each house in master list, if it's not on the csv downloaded today,
+	//search it in redfin to see what its status is
+	console.log('looping through houses in master house list, checking if its current status is known based on the latest csv download');
+	return loopInOrder(masterHouseArr, function(elem){
+		delete elem['SOLD DATE'];
+		delete elem['NEXT OPEN HOUSE START TIME'];
+		delete elem['NEXT OPEN HOUSE END TIME'];
+		delete elem['FAVORITE'];
+		delete elem['INTERESTED'];
+		
+		if(!elem['LAST SOLD DATE']) elem['LAST SOLD DATE'] = "";
+		if(!elem['FIRST NAME']) elem['FIRST NAME'] = "";
+		if(!elem['LAST NAME']) elem['LAST NAME'] = "";
+		if(!elem['CORPORATION NAME']) elem['CORPORATION NAME'] = "";
+
+		var knownHouseKey = elem.ADDRESS + elem.CITY + elem.STATE + elem.ZIP;
+		console.log(knownHouseKey);
+		var found = false;
+	    recentSheetArr.forEach(function(recentHouse){
+			if(found) {
+				return;
+			}
+			var recentHouseKey = recentHouse.ADDRESS + recentHouse.CITY + recentHouse.STATE + recentHouse.ZIP;
+			if(knownHouseKey === recentHouseKey) {
+				console.log('this one was found on the list.');
+				found = true;
+			}
+	    });
+	  var promise = null;
+	  if(found){
+		if(elem.STATUS === 'Contingent'){
+			promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
+				return searchForStatusOnHousePage(driver);
+			});
+		}
+		else promise = Promise.resolve();
+	  }
+	  else promise = driver.get(elem['URL (SEE http://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)']).then(function(){
+		return searchForStatusOnHousePage(driver);
+	  });
+	  return promise.then(function(status){
+		  if(status){
+			 elem.STATUS = status;	
+			 if(status.toLowerCase() === 'sold'){
+				 if(!elem['LAST SOLD DATE']){
+					 elem['LAST SOLD DATE'] = "" + new Date();
+				 }
+			} 
+		  } 	 
+	  }).catch(function(err){
+		  elem.STATUS = 'Not Found';
+		  console.log(err.stack + '\n');
+		  console.log('Could not get status of address: ' + elem.ADDRESS + '\n\n\n');
 	  });
   });
-}).then(function(){
-	masterHouseArr = masterHouseArr.filter(function(house){
-		return !doFilterOrNot(house);
-	});
-}).then(function(){
-	var googleReadyNewMasterList = convertObjectValuesToGoogleValues(masterHouseArr);
-	return master_sheet.update_sheet(googleReadyNewMasterList);
-}).then(function(){
-	var expiredListingsArr = masterHouseArr.filter(function(masterHouseEntry){
-		return masterHouseEntry.STATUS === 'Not For Sale';
-	});
-	var googleReadyExpiredListingsList = convertObjectValuesToGoogleValues(expiredListingsArr);
-	if(googleReadyExpiredListingsList.length === 1) return Promise.resolve();
-	var expired_listings_sheet = new GoogleSheet(SHEET_ID, TAB_NAMES.EXPIRED_LISTINGS);
-	return expired_listings_sheet.update_sheet(googleReadyExpiredListingsList);
-});
-  
+}
+
+function houseOnPageIsSold(pageSrc){
+	return pageSrc.includes('sold for');
+}
+
+function houseOnPageIsPending(pageSrc){
+	return pageSrc.includes('PENDING');
+}
+
+function houseOnPageIsAcceptBackups(pageSrc){
+	return pageSrc.includes('"sash-text">ACCEPTING BACKUP OFFERS');
+}
+
+function houseOnPageIsNotForSale(pageSrc){
+	return pageSrc.includes("NOT FOR SALE");
+}
+
 function searchForStatusOnHousePage(driver){
-	return verifyElement(By.xpath('//span[text()="Status: "]/../span[2]')).then(function(element){
-		return element.getText();
-	}).catch(function(err){
-		return verifyElement(By.xpath('//div[text()="PENDING"]')).then(function(){
-			return "Pending";
-		});
+	return driver.getPageSource().then(function(source){
+		if(houseOnPageIsPending(source)) return 'Pending';
+		if(houseOnPageIsAcceptBackups(source)) return 'Accept Backups';
+		if(houseOnPageIsNotForSale(source)) return 'Not For Sale';
+		if(houseOnPageIsSold(source)) return 'Sold';
+		return 'Not Found';
 	});
 }
 
@@ -291,6 +331,10 @@ function searchForHouseOwnerOnARCountyData(driver, city, address_street_name, st
 			  return sendKeys(By.id("City"), city);
 		  }).then(function(){
 			  return click(By.id("Search1"));
+		  }).then(function(){
+			  return driver2.getPageSource().then(function(source){
+				  if(source.includes('Nothing Matching')) throw new Error(); //skip selenium page search if nothing found
+			  });
 		  }).then(function(){
 			  return BrowserOps.verifyElements(By.xpath('//a[text()="Parcel #"]/../../../../../../../../tbody[1]/tr'));
 		  }).then(function(elements){
@@ -378,8 +422,8 @@ function isName(str){
 	var name = str;
 	if(name.includes('LLC')) return false;
 	if(name.includes('INC')) return false;
-	name = name.replace('/', ' ');
-	name = name.replace('\\', ' ');
+	//name = name.replace('/', ' ');
+	//name = name.replace('\\', ' ');
 	var name_split = name.split(' ');
 	
 	//how many of the words in the name string are names?
@@ -387,8 +431,11 @@ function isName(str){
 	var numThatAreNames = 0;
 	var numThatAreWords = 0;
 	name_split.forEach(function(word){
+		//console.log(word);
 		var isWord = isAWord(word);
 		var isName = isAName(word);
+		//console.log('is word: ' + isWord);
+		//console.log('is name: ' + isName);
 		if(!isWord && !isName) numThatAreNames++;
 		else if(isName) numThatAreNames++;
 		else numThatAreWords++;
