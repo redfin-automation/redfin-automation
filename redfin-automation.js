@@ -88,7 +88,7 @@ downloadHouseCSV().then(function(){
 });
   
 function downloadHouseCSV(){
-	return driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&num_homes=22000&ord=price-asc&page_number=1&poly=-93.10751575078125%2034.23010298691406%2C-91.31018664921875%2034.23010298691406%2C-91.31018664921875%2035.13309981308594%2C-93.10751575078125%2035.13309981308594%2C-93.10751575078125%2034.23010298691406&sf=1,2,3,5,6,7&sp=true&status=7&uipt=1,2,3,4,5,6&v=8').then(function(){
+	return driver.get('https://www.redfin.com/stingray/api/gis-csv?al=1&market=littlerock&num_homes=22000&ord=price-asc&page_number=1&poly=-93.10751575078125%2034.23010298691406%2C-91.31018664921875%2034.23010298691406%2C-91.31018664921875%2035.13309981308594%2C-93.10751575078125%2035.13309981308594%2C-93.10751575078125%2034.23010298691406&sf=1,7&sp=true&status=7&uipt=1,2,3,4,5,6&v=8').then(function(){
 	  return pause(20000);
 	});
 }
@@ -213,6 +213,11 @@ function parseOwnerAsNameAndAssignToHouse(text, elem){
 	  elem['CORPORATION NAME'] = text;
 	  return;
    }
+   //discard everything after (and including) / or possibly \ because that usually means it's more than one name.
+	var maxIndex = Math.max(name.indexOf('\\'), name.indexOf('/'));
+	if(maxIndex !== -1){
+		name = name.substring(0, maxIndex);
+	}
    var split = text.split(" ");
    var lastName = split[0];
    var firstName = split.slice(1).join(' ');
@@ -298,11 +303,16 @@ function houseOnPageIsNotForSale(pageSrc){
 
 function searchForStatusOnHousePage(driver){
 	return driver.getPageSource().then(function(source){
+		/*console.log('pending: ' + houseOnPageIsPending(source));
+		console.log('accept backups: ' + houseOnPageIsAcceptBackups(source));
+		console.log('not for sale: ' + houseOnPageIsNotForSale(source));
+		console.log('sold: ' + houseOnPageIsSold(source));*/
+		
 		if(houseOnPageIsPending(source)) return 'Pending';
 		if(houseOnPageIsAcceptBackups(source)) return 'Accept Backups';
 		if(houseOnPageIsNotForSale(source)) return 'Not For Sale';
 		if(houseOnPageIsSold(source)) return 'Sold';
-		return 'Not Found';
+		return 'Active';
 	});
 }
 
@@ -418,29 +428,62 @@ function convertObjectValuesToGoogleValues(objectValues){
 	return finalGoogleValues;
 }
 
+
 function isName(str){
 	var name = str;
-	if(name.includes('LLC')) return false;
-	if(name.includes('INC')) return false;
-	//name = name.replace('/', ' ');
-	//name = name.replace('\\', ' ');
+	//discard everything after (and including) / or possibly \ because that usually means it's more than one name.
+	var maxIndex = Math.max(name.indexOf('\\'), name.indexOf('/'));
+	if(maxIndex !== -1){
+		name = name.substring(0, maxIndex);
+	}
 	var name_split = name.split(' ');
 	
-	//how many of the words in the name string are names?
+	//sum over each word (part of a name), adding points for each word.
+	//if it's as name-like as possible, it's +1, if it's as word-like 
+	//as possible (indicating it's like a corporation name), it's -1
+	//and 0 if it's undecisive. If the word definitely points toward
+	//it being a corporation name (e.g., LLC, INC), it's -999 points.
+	var points = 0;
+	for(var i = 0; i < name_split.length; i++){
+		var name_part = name_split[i];
+		if(i === 0){
+			//this may be the last name... points for being a name,
+			//and also for being not a word
+			if(isAName(name_part)){
+				points += .5;
+			}
+			
+			if(!isAWord(name_part)){
+				points += .5;
+			}
+		} else{
+			//This is first or middle name maybe, or part of the corporation name.
+			if(isAName(name_part)){
+				points += .5;
+			} else if (name_part.length === 1){
+				points += 1;
+			} else {
+				points -= .5;
+			}
+			
+			if(isAWord(name_part)){
+				points -= .5;
+			} else {
+				points += .5;
+			}
+		}
+		if(isDefinitelyCorporationWord(name_part)){
+			points -= 999;
+		}
+		if(isANumber(name_part)){
+			points -= 1;
+		}
+		if(isNameTitle(name_part)){
+			points += 1;
+		}
+	}
 	
-	var numThatAreNames = 0;
-	var numThatAreWords = 0;
-	name_split.forEach(function(word){
-		//console.log(word);
-		var isWord = isAWord(word);
-		var isName = isAName(word);
-		//console.log('is word: ' + isWord);
-		//console.log('is name: ' + isName);
-		if(!isWord && !isName) numThatAreNames++;
-		else if(isName) numThatAreNames++;
-		else numThatAreWords++;
-	});
-	if(numThatAreNames >= numThatAreWords) return true;
+	return points > 0;
 }
 
 function isAWord(string){
@@ -452,6 +495,34 @@ function isAWord(string){
 function isAName(string){
 	return namesArr.some(function(name){
 		return (name.toLowerCase() === string.toLowerCase());
+	});
+}
+
+function isANumber(string){
+	return !isNaN(Number(string));
+}
+
+function isNameTitle(string){
+	var name_titles = [
+		'sr',
+		'jr',
+		'iii'
+	];
+	return name_titles.some(function(word){
+		return word.toLowerCase() === string.toLowerCase();
+	});
+}
+
+function isDefinitelyCorporationWord(string){
+	var corp_words = [
+		'LLC',
+		'INC',
+		'of',
+		'revocable',
+		'trust'
+	];
+	return corp_words.some(function(word){
+		return word.toLowerCase() === string.toLowerCase();
 	});
 }
 
