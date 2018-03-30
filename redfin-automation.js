@@ -214,9 +214,9 @@ function parseOwnerAsNameAndAssignToHouse(text, elem){
 	  return;
    }
    //discard everything after (and including) / or possibly \ because that usually means it's more than one name.
-	var maxIndex = Math.max(name.indexOf('\\'), name.indexOf('/'));
+	var maxIndex = Math.max(text.indexOf('\\'), text.indexOf('/'));
 	if(maxIndex !== -1){
-		name = name.substring(0, maxIndex);
+		text = text.substring(0, maxIndex);
 	}
    var split = text.split(" ");
    var lastName = split[0];
