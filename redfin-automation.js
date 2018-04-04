@@ -473,7 +473,7 @@ function isName(str){
 			}
 		}
 		if(isDefinitelyCorporationWord(name_part)){
-			points -= 999;
+			return false;
 		}
 		if(isANumber(name_part)){
 			points -= 1;
@@ -519,7 +519,13 @@ function isDefinitelyCorporationWord(string){
 		'INC',
 		'of',
 		'revocable',
-		'trust'
+		'trust',
+		'holding',
+		'holdings',
+		'incorporated',
+		'limited',
+		'ltd',
+		'corporation'
 	];
 	return corp_words.some(function(word){
 		return word.toLowerCase() === string.toLowerCase();
